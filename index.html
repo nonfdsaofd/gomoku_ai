@@ -1,31 +1,583 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>我的个人主页</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>五子棋</title>
+    <!-- 引入 ONNX Runtime -->
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort.all.min.js"></script>
     <style>
-        body {
-            font-family: sans-serif;
-            text-align: center;
-            padding-top: 50px;
-            background-color: #f0f2f5;
-        }
-        h1 { color: #333; }
-        .card {
-            background: white;
-            width: 300px;
-            margin: 0 auto;
+        body { font-family: 'Segoe UI', sans-serif; background: #f4f6f9; display: flex; height: 100vh; margin: 0; overflow: hidden; }
+        
+        /* 侧边栏样式 */
+        .sidebar { width: 300px; background: white; padding: 20px; box-shadow: 4px 0 15px rgba(0,0,0,0.05); display: flex; flex-direction: column; overflow-y: auto; z-index: 2; flex-shrink: 0; }
+        
+        .main-area { 
+            flex: 1; 
+            display: flex; 
+            flex-direction: column; 
+            justify-content: center; 
+            align-items: center; 
+            background-color: #eef2f5; 
+            overflow: auto; 
             padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        h2 { margin-top: 0; color: #2c3e50; font-size: 22px; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        
+        .control-group { margin-bottom: 20px; background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #e9ecef; }
+        .control-group label { display: block; margin-bottom: 8px; font-weight: 600; color: #495057; font-size: 14px; }
+        
+        /* 按钮样式 */
+        .btn { width: 100%; padding: 12px; border: none; border-radius: 6px; cursor: pointer; font-size: 15px; margin-bottom: 10px; transition: all 0.2s; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 8px; }
+        .btn-start { background: #2ecc71; color: white; }
+        .btn-start:hover { background: #27ae60; box-shadow: 0 4px 10px rgba(46,204,113,0.3); }
+        .btn-undo { background: #f39c12; color: white; }
+        .btn-undo:hover { background: #e67e22; }
+        
+        .status-box { padding: 12px; background: #e8f4fd; border-left: 4px solid #3498db; color: #2980b9; margin-bottom: 5px; font-size: 14px; line-height: 1.5; border-radius: 4px; }
+        
+        /* === 新增：胜率显示样式 === */
+        .win-rate-box {
+            font-size: 16px;
+            font-weight: bold;
+            text-align: center;
+            padding: 10px;
+            background: #fff;
+            border: 1px solid #eee;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            color: #7f8c8d; /* 默认灰色 */
+        }
+
+        /* 棋盘样式 */
+        canvas { background-color: #E3CF57; box-shadow: 0 10px 25px rgba(0,0,0,0.2); border-radius: 4px; cursor: pointer; user-select: none; }
+        
+        /* 复选框样式 */
+        .checkbox-wrapper { display: flex; align-items: center; font-size: 14px; cursor: pointer; margin-top: 5px; }
+        .checkbox-wrapper input { margin-right: 8px; cursor: pointer; }
+
+        /* AI思考提示文字样式 */
+        .ai-thinking-text {
+            color: #e74c3c; 
+            font-weight: bold;
+            font-size: 18px;
+            margin-bottom: 10px; 
+            height: 27px; 
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .ai-thinking-text.active {
+            opacity: 1;
         }
     </style>
 </head>
 <body>
-    <div class="card">
-        <h1>🎉 成功了！</h1>
-        <p>这是我部署的第一个静态网站。</p>
-        <p>GitHub Pages 真香！</p>
+
+    <div class="sidebar">
+        <h2>AlphaZero 五子棋</h2>
+        
+        <div class="status-box" id="statusLabel">正在初始化...</div>
+        
+        <!-- 新增：胜率显示区域 -->
+        <div class="win-rate-box" id="winRateLabel">AI 预估胜率: --%</div>
+
+        <div class="control-group">
+            <label>🎮 玩家设置</label>
+            <div class="checkbox-wrapper" style="margin-bottom:5px;">
+                <input type="radio" name="side" id="side_black" value="1" checked> 
+                <label for="side_black" style="margin:0; font-weight:normal; cursor:pointer;">执黑 (先手)</label>
+            </div>
+            <div class="checkbox-wrapper">
+                <input type="radio" name="side" id="side_white" value="2"> 
+                <label for="side_white" style="margin:0; font-weight:normal; cursor:pointer;">执白 (后手)</label>
+            </div>
+        </div>
+
+        <button class="btn btn-start" onclick="game.resetGame()">🔄 重新开始</button>
+        <button class="btn btn-undo" onclick="game.undoMove()">↩️ 悔棋</button>
     </div>
+
+    <div class="main-area">
+        <div id="aiThinkingLabel" class="ai-thinking-text">
+            AI思考中<span id="dotCycle">...</span>
+        </div>
+
+        <div style="position:relative; background: white; border-radius: 8px; box-shadow: 0 5px 20px rgba(0,0,0,0.1); display: inline-block;">
+            <canvas id="boardCanvas" width="640" height="640"></canvas>
+        </div>
+    </div>
+
+<script>
+// ==========================================
+// 1. 全局配置
+// ==========================================
+const BOARD_SIZE = 15;
+const CELL_SIZE = 40; 
+const MARGIN = 40; 
+
+const SEARCH_MAX_DEPTH = 6;
+const SEARCH_TOP_K = 5;
+const SEARCH_P_THRESH = 0.1;
+
+// ==========================================
+// 2. 棋盘逻辑 (Board)
+// ==========================================
+class Board {
+    constructor() {
+        this.grid = new Int8Array(BOARD_SIZE * BOARD_SIZE).fill(0);
+        this.currentPlayer = 1; // 1=黑, 2=白
+        this.moveCount = 0;
+        this.lastMove = -1;
+        this.historyStack = []; 
+    }
+
+    init() {
+        this.grid.fill(0);
+        this.currentPlayer = 1;
+        this.moveCount = 0;
+        this.lastMove = -1;
+        this.historyStack = [];
+    }
+
+    doMove(move) {
+        if (this.grid[move] !== 0) return false;
+        this.historyStack.push({ m: move, lm: this.lastMove });
+        this.grid[move] = this.currentPlayer;
+        this.lastMove = move;
+        this.currentPlayer = 3 - this.currentPlayer;
+        this.moveCount++;
+        return true;
+    }
+
+    undoMove(move) {
+        const record = this.historyStack.pop();
+        if (!record) return;
+        const pos = (move !== undefined) ? move : record.m;
+        this.grid[pos] = 0;
+        this.currentPlayer = 3 - this.currentPlayer;
+        this.moveCount--;
+        this.lastMove = record.lm;
+    }
+
+    hasWinner() {
+        if (this.lastMove === -1) return { end: false, winner: -1 };
+        const p = this.grid[this.lastMove];
+        const r = Math.floor(this.lastMove / BOARD_SIZE);
+        const c = this.lastMove % BOARD_SIZE;
+        const dirs = [[0, 1], [1, 0], [1, 1], [1, -1]];
+        
+        for (let [dr, dc] of dirs) {
+            let count = 1;
+            for (let i = 1; i < 5; i++) {
+                let nr = r + dr * i, nc = c + dc * i;
+                if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE && this.grid[nr * BOARD_SIZE + nc] === p) count++; else break;
+            }
+            for (let i = 1; i < 5; i++) {
+                let nr = r - dr * i, nc = c - dc * i;
+                if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE && this.grid[nr * BOARD_SIZE + nc] === p) count++; else break;
+            }
+            if (count >= 5) return { end: true, winner: p };
+        }
+        if (this.moveCount >= BOARD_SIZE * BOARD_SIZE) return { end: true, winner: -1 };
+        return { end: false, winner: -1 };
+    }
+
+    getTensorInput() {
+        const input = new Float32Array(3 * BOARD_SIZE * BOARD_SIZE);
+        const planeSize = BOARD_SIZE * BOARD_SIZE;
+        const myVal = this.currentPlayer;
+        const opVal = 3 - this.currentPlayer;
+        
+        for (let i = 0; i < planeSize; i++) {
+            const val = this.grid[i];
+            if (val === myVal) input[i] = 1.0;
+            else if (val === opVal) input[i + planeSize] = 1.0;
+            input[i + planeSize * 2] = (this.currentPlayer === 1) ? 1.0 : 0.0;
+        }
+        return input;
+    }
+
+    getValidMoves() {
+        const moves = [];
+        for(let i=0; i<this.grid.length; i++) if(this.grid[i]===0) moves.push(i);
+        return moves;
+    }
+
+    signature() {
+        return this.grid.toString() + "|" + this.currentPlayer;
+    }
+}
+
+// ==========================================
+// 3. 神经网络 (ONNX)
+// ==========================================
+class NeuralNet {
+    constructor() { this.session = null; }
+
+    async init() {
+        try {
+            ort.env.wasm.numThreads = 4;
+            this.session = await ort.InferenceSession.create('./model.onnx', { 
+                executionProviders: ['wasm'] 
+            });
+            return true;
+        } catch (e) {
+            console.warn("模型加载失败", e);
+            alert("⚠️ 提示：未找到 model.onnx 模型文件。\nAI 将使用随机落子。");
+            return false;
+        }
+    }
+
+    async predict(board) {
+        if (!this.session) {
+            const len = BOARD_SIZE * BOARD_SIZE;
+            const probs = new Float32Array(len).fill(1/len);
+            return { probs, value: 0 };
+        }
+        const inputData = board.getTensorInput();
+        const tensor = new ort.Tensor('float32', inputData, [1, 3, BOARD_SIZE, BOARD_SIZE]);
+        const results = await this.session.run({ input: tensor });
+        const logProbs = results.log_probs.data; 
+        const value = results.value.data[0];
+        
+        const probs = new Float32Array(logProbs.length);
+        for(let i=0; i<probs.length; i++) probs[i] = Math.exp(logProbs[i]);
+        return { probs, value };
+    }
+}
+
+// ==========================================
+// 4. 树搜索
+// ==========================================
+class CustomTreeSearch {
+    constructor(net) {
+        this.net = net;
+        this.nnCache = {};
+    }
+
+    async _callPolicyWithCache(board) {
+        const key = board.signature();
+        if (this.nnCache[key]) return this.nnCache[key];
+        const res = await this.net.predict(board);
+        this.nnCache[key] = res;
+        return res;
+    }
+
+    async _getSortedCandidates(board) {
+        const { probs } = await this._callPolicyWithCache(board);
+        const candidates = [];
+        const validMoves = board.getValidMoves();
+        
+        for (let move of validMoves) {
+            const p = probs[move];
+            if (p > SEARCH_P_THRESH) candidates.push({ move, prob: p });
+        }
+        candidates.sort((a, b) => b.prob - a.prob);
+        return candidates.slice(0, SEARCH_TOP_K);
+    }
+
+    async _negamax(board, depth, alpha, beta) {
+        const { end, winner } = board.hasWinner();
+        if (end) return winner !== -1 ? -1.0 : 0.0;
+        if (depth >= SEARCH_MAX_DEPTH) {
+            const { value } = await this._callPolicyWithCache(board);
+            return value;
+        }
+
+        const candidates = await this._getSortedCandidates(board);
+        if (candidates.length === 0) return 0.0;
+
+        let bestScore = -Infinity;
+        for (let cand of candidates) {
+            board.doMove(cand.move);
+            const score = - (await this._negamax(board, depth + 1, -beta, -alpha));
+            board.undoMove(cand.move);
+            if (score > bestScore) bestScore = score;
+            alpha = Math.max(alpha, score);
+            if (alpha >= beta) break;
+        }
+        return bestScore;
+    }
+
+    async getMove(board) {
+        this.nnCache = {}; 
+        
+        const candidates = await this._getSortedCandidates(board);
+        
+        // 随机回退机制
+        if (candidates.length === 0) {
+            const moves = board.getValidMoves();
+            const randMove = moves[Math.floor(Math.random() * moves.length)];
+            return { move: randMove, val: 0.0 }; // 随机时估值为0
+        }
+
+        let bestMove = -1;
+        let alpha = -Infinity;
+        let bestVal = -Infinity; // 追踪最佳估值
+
+        for (let cand of candidates) {
+            board.doMove(cand.move);
+            const score = - (await this._negamax(board, 1, -100, -alpha));
+            board.undoMove(cand.move);
+
+            if (score > alpha) {
+                alpha = score;
+                bestMove = cand.move;
+                bestVal = score; // 记录最佳分数
+            }
+        }
+        
+        if (bestMove === -1) {
+            bestMove = candidates[0].move;
+            bestVal = alpha; // 如果没有找到更好的，使用alpha
+        }
+
+        return { move: bestMove, val: bestVal };
+    }
+}
+
+// ==========================================
+// 5. 游戏控制
+// ==========================================
+class GameController {
+    constructor() {
+        this.board = new Board();
+        this.net = new NeuralNet();
+        this.searcher = new CustomTreeSearch(this.net);
+        
+        this.canvas = document.getElementById('boardCanvas');
+        this.ctx = this.canvas.getContext('2d');
+        this.statusLabel = document.getElementById('statusLabel');
+        this.winRateLabel = document.getElementById('winRateLabel');
+        this.aiThinkingLabel = document.getElementById('aiThinkingLabel');
+        this.dotSpan = document.getElementById('dotCycle');
+        this.dotInterval = null;
+        
+        this.humanSide = 1;
+        this.isThinking = false;
+        this.gameOver = false;
+
+        this.canvas.addEventListener('mousedown', (e) => this.onClick(e));
+        this.init();
+    }
+
+    async init() {
+        const ok = await this.net.init();
+        if (ok) {
+            this.updateStatus("✅ 模型就绪");
+        } else {
+            this.updateStatus("⚠️ 无模型 (随机模式)");
+        }
+        this.resetGame();
+    }
+
+    startDotAnimation() {
+        this.aiThinkingLabel.classList.add('active'); 
+        let count = 0;
+        this.dotSpan.innerText = "";
+        if (this.dotInterval) clearInterval(this.dotInterval);
+        this.dotInterval = setInterval(() => {
+            count = (count + 1) % 4; 
+            this.dotSpan.innerText = ".".repeat(count);
+        }, 400);
+    }
+
+    stopDotAnimation() {
+        this.aiThinkingLabel.classList.remove('active'); 
+        if (this.dotInterval) clearInterval(this.dotInterval);
+        this.dotSpan.innerText = "...";
+    }
+
+    resetGame() {
+        this.board.init();
+        this.gameOver = false;
+        this.isThinking = false;
+        this.stopDotAnimation();
+        this.winRateLabel.innerText = "AI 预估胜率: --%";
+        this.winRateLabel.style.color = "#7f8c8d";
+        
+        const radios = document.getElementsByName('side');
+        for(let r of radios) if(r.checked) this.humanSide = parseInt(r.value);
+
+        this.draw();
+        if (this.humanSide === 2) this.triggerAiMove();
+        else this.updateStatus("请执黑落子");
+    }
+
+    draw() {
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        
+        // 0. 绘制坐标
+        this.ctx.fillStyle = "#5e4b35";
+        this.ctx.font = "bold 12px Arial";
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        
+        for (let i = 0; i < BOARD_SIZE; i++) {
+            const pos = MARGIN + i * CELL_SIZE;
+            this.ctx.fillText(String.fromCharCode(65 + i), pos, MARGIN - 25);
+            this.ctx.fillText(i + 1, MARGIN - 25, pos);
+        }
+
+        // 1. 绘制网格
+        this.ctx.strokeStyle = "#5e4b35";
+        this.ctx.lineWidth = 1.2;
+        this.ctx.beginPath();
+        
+        for (let i = 0; i < BOARD_SIZE; i++) {
+            const y = MARGIN + i * CELL_SIZE;
+            this.ctx.moveTo(MARGIN, y);
+            this.ctx.lineTo(MARGIN + (BOARD_SIZE - 1) * CELL_SIZE, y);
+            
+            const x = MARGIN + i * CELL_SIZE;
+            this.ctx.moveTo(x, MARGIN);
+            this.ctx.lineTo(x, MARGIN + (BOARD_SIZE - 1) * CELL_SIZE);
+        }
+        this.ctx.stroke();
+        
+        // 2. 绘制星位
+        this.ctx.fillStyle = "#5e4b35";
+        [3, 7, 11].forEach(r => {
+            [3, 7, 11].forEach(c => {
+                const x = MARGIN + c * CELL_SIZE;
+                const y = MARGIN + r * CELL_SIZE;
+                this.ctx.beginPath(); 
+                this.ctx.arc(x, y, 4, 0, Math.PI*2); 
+                this.ctx.fill();
+            });
+        });
+
+        // 3. 绘制棋子
+        for (let i = 0; i < this.board.grid.length; i++) {
+            if (this.board.grid[i] !== 0) {
+                const r = Math.floor(i / BOARD_SIZE);
+                const c = i % BOARD_SIZE;
+                const x = MARGIN + c * CELL_SIZE;
+                const y = MARGIN + r * CELL_SIZE;
+                
+                this.ctx.beginPath();
+                this.ctx.arc(x, y, CELL_SIZE/2 - 2, 0, Math.PI*2);
+                
+                const grad = this.ctx.createRadialGradient(x-4, y-4, 3, x, y, 18);
+                if (this.board.grid[i] === 1) { // 黑子
+                    grad.addColorStop(0, "#666"); grad.addColorStop(1, "#000");
+                } else { // 白子
+                    grad.addColorStop(0, "#fff"); grad.addColorStop(1, "#dcdcdc");
+                }
+                this.ctx.fillStyle = grad;
+                this.ctx.fill();
+                
+                if (this.board.grid[i] === 2) {
+                    this.ctx.strokeStyle = "#bbb"; 
+                    this.ctx.lineWidth = 1; 
+                    this.ctx.stroke();
+                }
+            }
+        }
+        
+        // 4. 标记最后一步
+        if (this.board.lastMove !== -1) {
+            const r = Math.floor(this.board.lastMove / BOARD_SIZE);
+            const c = this.board.lastMove % BOARD_SIZE;
+            const x = MARGIN + c * CELL_SIZE;
+            const y = MARGIN + r * CELL_SIZE;
+            this.ctx.strokeStyle = "red";
+            this.ctx.lineWidth = 2.5;
+            this.ctx.beginPath();
+            this.ctx.moveTo(x-6, y); this.ctx.lineTo(x+6, y);
+            this.ctx.moveTo(x, y-6); this.ctx.lineTo(x, y+6);
+            this.ctx.stroke();
+        }
+    }
+
+    async triggerAiMove() {
+        if (this.gameOver) return;
+        this.isThinking = true;
+        
+        this.startDotAnimation();
+        this.updateStatus("🤖 AI 正在思考...");
+        
+        setTimeout(async () => {
+            const res = await this.searcher.getMove(this.board);
+            
+            this.board.doMove(res.move);
+            this.finishMove();
+            this.isThinking = false;
+            
+            // === 计算胜率 ===
+            // 神经网络输出通常是 -1.0 到 1.0 (或接近)
+            // 胜率 = (value + 1) / 2 * 100
+            if (res.val !== undefined && res.val !== -Infinity) {
+                // 限制在 -1 到 1 之间防止溢出
+                const clampedVal = Math.max(-1, Math.min(1, res.val));
+                const winRate = (clampedVal + 1) / 2 * 100;
+                
+                this.winRateLabel.innerText = `AI 预估胜率: ${winRate.toFixed(1)}%`;
+                
+                // 颜色变化：胜率高显示绿色，低显示红色
+                if (winRate >= 50) this.winRateLabel.style.color = "#27ae60"; // 绿
+                else this.winRateLabel.style.color = "#c0392b"; // 红
+            }
+
+            this.stopDotAnimation();
+        }, 50);
+    }
+
+    onClick(e) {
+        if (this.isThinking || this.gameOver) return;
+        if (this.board.currentPlayer !== this.humanSide) return;
+
+        const rect = this.canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        const c = Math.round((x - MARGIN) / CELL_SIZE);
+        const r = Math.round((y - MARGIN) / CELL_SIZE);
+        
+        if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE) return;
+        
+        const centerX = MARGIN + c * CELL_SIZE;
+        const centerY = MARGIN + r * CELL_SIZE;
+        const dist = Math.sqrt((x-centerX)**2 + (y-centerY)**2);
+        if (dist > CELL_SIZE * 0.45) return; 
+
+        if (this.board.doMove(r * BOARD_SIZE + c)) {
+            this.finishMove();
+            if (!this.gameOver) this.triggerAiMove();
+        }
+    }
+
+    finishMove() {
+        this.draw();
+        const { end, winner } = this.board.hasWinner();
+        if (end) {
+            this.gameOver = true;
+            let msg = winner === this.humanSide ? "🎉 恭喜你赢了！" : (winner !== -1 ? "🤖 AI 赢了" : "🤝 平局");
+            this.updateStatus(msg);
+            setTimeout(() => alert(msg), 100);
+        } else {
+            const isMe = this.board.currentPlayer === this.humanSide;
+            this.updateStatus(isMe ? "👇 轮到你了" : "⏳ 等待 AI...");
+        }
+    }
+
+    undoMove() {
+        if (this.isThinking || this.gameOver) return;
+        if (this.board.moveCount >= 2) {
+            this.board.undoMove(); this.board.undoMove();
+            this.draw();
+            this.updateStatus("↩️ 已悔棋");
+        } else if (this.humanSide === 2 && this.board.moveCount === 1) {
+            this.board.undoMove();
+            this.triggerAiMove();
+        }
+    }
+
+    updateStatus(text) { this.statusLabel.innerText = text; }
+}
+
+const game = new GameController();
+</script>
 </body>
 </html>
