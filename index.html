@@ -122,7 +122,7 @@
         <h2>五子棋</h2>
         
         <div class="status-box" id="statusLabel">正在初始化...</div>
-        <div class="win-rate-box" id="winRateLabel">AI 预估胜率: --%</div>
+        <div class="win-rate-box" id="winRateLabel">AI觉得自己有--%概率获胜</div>
 
         <div class="control-group">
             <label>🎮 玩家设置</label>
@@ -486,7 +486,7 @@ class GameController {
         this.gameOver = false;
         this.isThinking = false;
         this.stopDotAnimation();
-        this.winRateLabel.innerText = "AI 预估胜率: --%";
+        this.winRateLabel.innerText = "AI觉得自己有--%概率获胜";
         this.winRateLabel.style.color = "#7f8c8d";
         
         const radios = document.getElementsByName('side');
@@ -614,7 +614,7 @@ class GameController {
             if (res.val !== undefined && res.val !== -Infinity) {
                 const clampedVal = Math.max(-1, Math.min(1, res.val));
                 const winRate = (clampedVal + 1) / 2 * 100;
-                this.winRateLabel.innerText = `AI 预估胜率: ${winRate.toFixed(1)}%`;
+                this.winRateLabel.innerText = `AI觉得自己有${winRate.toFixed(1)}%概率获胜`;
                 
                 if (winRate >= 50) this.winRateLabel.style.color = "#27ae60"; 
                 else this.winRateLabel.style.color = "#c0392b"; 
