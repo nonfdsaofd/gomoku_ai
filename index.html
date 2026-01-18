@@ -148,7 +148,6 @@
         </div>
 
         <div class="canvas-container">
-            <!-- 移除固定宽高，由 JS 动态控制 -->
             <canvas id="boardCanvas"></canvas>
         </div>
     </div>
@@ -289,7 +288,7 @@ class NeuralNet {
 }
 
 // ==========================================
-// 4. 树搜索 (已添加特殊开局逻辑)
+// 4. 树搜索 (核心逻辑修改处)
 // ==========================================
 class CustomTreeSearch {
     constructor(net) {
@@ -345,7 +344,54 @@ class CustomTreeSearch {
         this.nnCache = {}; 
         
         // ============================================================
-        // [特殊开局] AI 后手第2手逻辑
+        // [新增逻辑] 
+        // 场景：AI为先手(黑)，且当前是第2手AI落子（全局MoveCount=2）
+        // 动作：不经过计算，随机在当前2颗棋子(黑1, 白2)的周边8格落子
+        // ============================================================
+        if (board.moveCount === 2 && board.currentPlayer === 1) {
+            // 获取历史记录中的前两手
+            if (board.historyStack.length >= 2) {
+                const moveBlack = board.historyStack[0].m;
+                const moveWhite = board.historyStack[1].m; // 或者 board.lastMove
+                
+                const centers = [moveBlack, moveWhite];
+                const validNeighbors = new Set();
+
+                for (let center of centers) {
+                    const r = Math.floor(center / BOARD_SIZE);
+                    const c = center % BOARD_SIZE;
+                    
+                    for (let dr = -1; dr <= 1; dr++) {
+                        for (let dc = -1; dc <= 1; dc++) {
+                            if (dr === 0 && dc === 0) continue;
+                            const nr = r + dr;
+                            const nc = c + dc;
+                            
+                            if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE) {
+                                const idx = nr * BOARD_SIZE + nc;
+                                // 必须是空位
+                                if (board.grid[idx] === 0) {
+                                    validNeighbors.add(idx);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                const movesList = Array.from(validNeighbors);
+                if (movesList.length > 0) {
+                    const randIdx = Math.floor(Math.random() * movesList.length);
+                    const finalMove = movesList[randIdx];
+                    console.log(`🔥 AI黑棋第3手(疏星/花月类开局)，随机落子: ${finalMove}`);
+                    return { move: finalMove, val: 0.0 }; // 直接返回，不走网络
+                }
+            }
+        }
+        // ============================================================
+
+
+        // ============================================================
+        // [旧逻辑保留] AI 后手第2手逻辑 (全局MoveCount=1)
         // ============================================================
         if (board.moveCount === 1) {
             const center = board.lastMove; 
@@ -375,7 +421,7 @@ class CustomTreeSearch {
                     for (let n of neighbors) {
                         randVal -= n.prob;
                         if (randVal <= 0) {
-                            console.log("🔥 AI触发直觉开局，落子位置:", n.move);
+                            console.log("🔥 AI白棋第2手，按概率落子:", n.move);
                             return { move: n.move, val: 0.0 }; 
                         }
                     }
@@ -383,38 +429,31 @@ class CustomTreeSearch {
                 }
             }
         }
-        // ============================================================
 
+        // ============================================================
+        // 常规树搜索
+        // ============================================================
         const candidates = await this._getSortedCandidates(board);
         
-        // ============================================================
-        // [修改处] candidates 为空时，不随机，而是取策略头最大值
-        // ============================================================
+        // [修改处保留] candidates 为空时，取策略头最大值
         if (candidates.length === 0) {
-            // 获取原始概率（读取缓存，不会增加额外计算开销）
             const { probs } = await this._callPolicyWithCache(board);
             const validMoves = board.getValidMoves();
 
             let bestMove = -1;
             let maxProb = -Infinity;
 
-            // 遍历所有合法空位，寻找概率最大的点
             for (let move of validMoves) {
                 if (probs[move] > maxProb) {
                     maxProb = probs[move];
                     bestMove = move;
                 }
             }
-
-            // 兜底逻辑：如果实在没找到（理论上不会，除非validMoves为空），取第一个合法点
-            if (bestMove === -1 && validMoves.length > 0) {
-                bestMove = validMoves[0];
-            }
+            if (bestMove === -1 && validMoves.length > 0) bestMove = validMoves[0];
 
             console.log(`⚠️ 无高置信度候选点，降级选取策略头最大值: ${bestMove} (prob: ${maxProb})`);
             return { move: bestMove, val: 0.0 };
         }
-        // ============================================================
 
         let bestMove = -1;
         let alpha = -Infinity;
@@ -536,8 +575,16 @@ class GameController {
         for(let r of radios) if(r.checked) this.humanSide = parseInt(r.value);
 
         this.draw();
-        if (this.humanSide === 2) this.triggerAiMove();
-        else this.updateStatus("请执黑落子");
+        
+        // 如果AI执黑，AI先落第一子（天元）
+        if (this.humanSide === 2) {
+            const center = Math.floor((BOARD_SIZE * BOARD_SIZE) / 2);
+            this.board.doMove(center);
+            this.finishMove();
+            // 第一手不需要triggerAiMove，直接下完等待玩家白棋
+        } else {
+            this.updateStatus("请执黑落子");
+        }
     }
 
     draw() {
