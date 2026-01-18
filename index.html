@@ -345,34 +345,23 @@ class CustomTreeSearch {
         this.nnCache = {}; 
         
         // ============================================================
-        // [新增功能] 
-        // 判定：若AI为后手(当前是第2手，即board.moveCount === 1)
-        // 且board.lastMove为黑子，则不搜索，直接在周围8格按概率随机下
+        // [特殊开局] AI 后手第2手逻辑
         // ============================================================
         if (board.moveCount === 1) {
-            const center = board.lastMove; // 上一手(黑子)的位置
-            
-            // 确保有一个合法的黑子位置 (防御性编程)
+            const center = board.lastMove; 
             if (center !== -1) {
-                // 获取神经网络的概率输出
                 const { probs } = await this._callPolicyWithCache(board);
-                
                 const r = Math.floor(center / BOARD_SIZE);
                 const c = center % BOARD_SIZE;
                 const neighbors = [];
 
-                // 遍历周围的8个方向
                 for (let dr = -1; dr <= 1; dr++) {
                     for (let dc = -1; dc <= 1; dc++) {
-                        if (dr === 0 && dc === 0) continue; // 跳过中心自己
-
+                        if (dr === 0 && dc === 0) continue; 
                         const nr = r + dr;
                         const nc = c + dc;
-                        
-                        // 检查边界
                         if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE) {
                             const idx = nr * BOARD_SIZE + nc;
-                            // 检查该位置是否为空 (第2手周围理论上全是空，但检查更稳健)
                             if (board.grid[idx] === 0) {
                                 neighbors.push({ move: idx, prob: probs[idx] });
                             }
@@ -380,35 +369,52 @@ class CustomTreeSearch {
                     }
                 }
 
-                // 如果找到了合法的周围位置，进行加权随机
                 if (neighbors.length > 0) {
-                    // 1. 计算这8个点概率总和
                     const totalProb = neighbors.reduce((sum, n) => sum + n.prob, 0);
-                    
-                    // 2. 随机选取
                     let randVal = Math.random() * totalProb;
-                    
                     for (let n of neighbors) {
                         randVal -= n.prob;
                         if (randVal <= 0) {
                             console.log("🔥 AI触发直觉开局，落子位置:", n.move);
-                            return { move: n.move, val: 0.0 }; // val给0.0表示中立
+                            return { move: n.move, val: 0.0 }; 
                         }
                     }
-                    // 浮点数误差兜底，返回最后一个
                     return { move: neighbors[neighbors.length - 1].move, val: 0.0 };
                 }
             }
         }
-        // ================= [新增功能结束] =================
+        // ============================================================
 
         const candidates = await this._getSortedCandidates(board);
         
+        // ============================================================
+        // [修改处] candidates 为空时，不随机，而是取策略头最大值
+        // ============================================================
         if (candidates.length === 0) {
-            const moves = board.getValidMoves();
-            const randMove = moves[Math.floor(Math.random() * moves.length)];
-            return { move: randMove, val: 0.0 };
+            // 获取原始概率（读取缓存，不会增加额外计算开销）
+            const { probs } = await this._callPolicyWithCache(board);
+            const validMoves = board.getValidMoves();
+
+            let bestMove = -1;
+            let maxProb = -Infinity;
+
+            // 遍历所有合法空位，寻找概率最大的点
+            for (let move of validMoves) {
+                if (probs[move] > maxProb) {
+                    maxProb = probs[move];
+                    bestMove = move;
+                }
+            }
+
+            // 兜底逻辑：如果实在没找到（理论上不会，除非validMoves为空），取第一个合法点
+            if (bestMove === -1 && validMoves.length > 0) {
+                bestMove = validMoves[0];
+            }
+
+            console.log(`⚠️ 无高置信度候选点，降级选取策略头最大值: ${bestMove} (prob: ${maxProb})`);
+            return { move: bestMove, val: 0.0 };
         }
+        // ============================================================
 
         let bestMove = -1;
         let alpha = -Infinity;
