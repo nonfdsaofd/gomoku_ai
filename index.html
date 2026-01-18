@@ -289,7 +289,7 @@ class NeuralNet {
 }
 
 // ==========================================
-// 4. 树搜索 (已添加特殊开局逻辑)
+// 4. 树搜索 (已添加特殊开局逻辑 + 修正后的Fallback)
 // ==========================================
 class CustomTreeSearch {
     constructor(net) {
@@ -345,34 +345,25 @@ class CustomTreeSearch {
         this.nnCache = {}; 
         
         // ============================================================
-        // [新增功能] 
+        // [开局逻辑] 
         // 判定：若AI为后手(当前是第2手，即board.moveCount === 1)
         // 且board.lastMove为黑子，则不搜索，直接在周围8格按概率随机下
         // ============================================================
         if (board.moveCount === 1) {
-            const center = board.lastMove; // 上一手(黑子)的位置
-            
-            // 确保有一个合法的黑子位置 (防御性编程)
+            const center = board.lastMove; 
             if (center !== -1) {
-                // 获取神经网络的概率输出
                 const { probs } = await this._callPolicyWithCache(board);
-                
                 const r = Math.floor(center / BOARD_SIZE);
                 const c = center % BOARD_SIZE;
                 const neighbors = [];
 
-                // 遍历周围的8个方向
                 for (let dr = -1; dr <= 1; dr++) {
                     for (let dc = -1; dc <= 1; dc++) {
-                        if (dr === 0 && dc === 0) continue; // 跳过中心自己
-
+                        if (dr === 0 && dc === 0) continue; 
                         const nr = r + dr;
                         const nc = c + dc;
-                        
-                        // 检查边界
                         if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE) {
                             const idx = nr * BOARD_SIZE + nc;
-                            // 检查该位置是否为空 (第2手周围理论上全是空，但检查更稳健)
                             if (board.grid[idx] === 0) {
                                 neighbors.push({ move: idx, prob: probs[idx] });
                             }
@@ -380,34 +371,50 @@ class CustomTreeSearch {
                     }
                 }
 
-                // 如果找到了合法的周围位置，进行加权随机
                 if (neighbors.length > 0) {
-                    // 1. 计算这8个点概率总和
                     const totalProb = neighbors.reduce((sum, n) => sum + n.prob, 0);
-                    
-                    // 2. 随机选取
                     let randVal = Math.random() * totalProb;
-                    
                     for (let n of neighbors) {
                         randVal -= n.prob;
                         if (randVal <= 0) {
-                            console.log("🔥 AI触发直觉开局，落子位置:", n.move);
-                            return { move: n.move, val: 0.0 }; // val给0.0表示中立
+                            return { move: n.move, val: 0.0 }; 
                         }
                     }
-                    // 浮点数误差兜底，返回最后一个
                     return { move: neighbors[neighbors.length - 1].move, val: 0.0 };
                 }
             }
         }
-        // ================= [新增功能结束] =================
+        // ================= [开局逻辑结束] =================
 
         const candidates = await this._getSortedCandidates(board);
         
+        // ============================================================
+        // [修改后的逻辑]
+        // 如果 candidates 长度为 0，说明没有任何一个点的概率超过阈值。
+        // 此时不进行随机落子，而是强制取网络输出概率最大的点。
+        // ============================================================
         if (candidates.length === 0) {
-            const moves = board.getValidMoves();
-            const randMove = moves[Math.floor(Math.random() * moves.length)];
-            return { move: randMove, val: 0.0 };
+            // 重新获取该局面的网络输出（有缓存，速度很快）
+            const { probs } = await this._callPolicyWithCache(board);
+            const validMoves = board.getValidMoves();
+            
+            let bestMove = -1;
+            let maxProb = -1;
+
+            // 遍历所有合法点，寻找概率最大值
+            for (let move of validMoves) {
+                if (probs[move] > maxProb) {
+                    maxProb = probs[move];
+                    bestMove = move;
+                }
+            }
+
+            // 兜底：如果还是找不到（理论上不可能，除非没合法步），随机走一步
+            if (bestMove === -1 && validMoves.length > 0) {
+                bestMove = validMoves[Math.floor(Math.random() * validMoves.length)];
+            }
+
+            return { move: bestMove, val: 0.0 };
         }
 
         let bestMove = -1;
@@ -421,292 +428,4 @@ class CustomTreeSearch {
 
             if (score > alpha) {
                 alpha = score;
-                bestMove = cand.move;
-                bestVal = score;
-            }
-        }
-        
-        if (bestMove === -1) {
-            bestMove = candidates[0].move;
-            bestVal = alpha;
-        }
-
-        return { move: bestMove, val: bestVal };
-    }
-}
-
-// ==========================================
-// 5. 游戏控制 (UI 逻辑)
-// ==========================================
-class GameController {
-    constructor() {
-        this.board = new Board();
-        this.net = new NeuralNet();
-        this.searcher = new CustomTreeSearch(this.net);
-        
-        this.canvas = document.getElementById('boardCanvas');
-        this.ctx = this.canvas.getContext('2d');
-        this.statusLabel = document.getElementById('statusLabel');
-        this.winRateLabel = document.getElementById('winRateLabel');
-        this.aiThinkingLabel = document.getElementById('aiThinkingLabel');
-        this.dotSpan = document.getElementById('dotCycle');
-        this.dotInterval = null;
-        
-        this.humanSide = 1;
-        this.isThinking = false;
-        this.gameOver = false;
-
-        this.cellSize = 0;
-        this.margin = 0;
-
-        this.canvas.addEventListener('click', (e) => this.onClick(e));
-        
-        let resizeTimer;
-        window.addEventListener('resize', () => {
-            clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(() => this.resizeBoard(), 100);
-        });
-
-        this.init();
-    }
-
-    async init() {
-        this.resizeBoard();
-        const ok = await this.net.init();
-        if (ok) {
-            this.updateStatus("✅ 模型就绪");
-        } else {
-            this.updateStatus("⚠️ 无模型 (随机模式)");
-            alert("⚠️ 提示：未找到 model.onnx 模型文件。\nAI 将使用随机落子。");
-        }
-        this.resetGame();
-    }
-
-    resizeBoard() {
-        const container = document.querySelector('.main-area');
-        let availableWidth = container.clientWidth - 30; 
-        
-        if (window.innerWidth > 768) {
-            availableWidth = Math.min(availableWidth, 640);
-        }
-
-        const size = Math.floor(availableWidth);
-        this.canvas.width = size;
-        this.canvas.height = size;
-        
-        this.margin = size * 0.05; 
-        const gridWidth = size - 2 * this.margin;
-        this.cellSize = gridWidth / (BOARD_SIZE - 1);
-        
-        this.draw();
-    }
-
-    startDotAnimation() {
-        this.aiThinkingLabel.classList.add('active'); 
-        let count = 0;
-        this.dotSpan.innerText = "";
-        if (this.dotInterval) clearInterval(this.dotInterval);
-        this.dotInterval = setInterval(() => {
-            count = (count + 1) % 4; 
-            this.dotSpan.innerText = ".".repeat(count);
-        }, 400);
-    }
-
-    stopDotAnimation() {
-        this.aiThinkingLabel.classList.remove('active'); 
-        if (this.dotInterval) clearInterval(this.dotInterval);
-        this.dotSpan.innerText = "...";
-    }
-
-    resetGame() {
-        this.board.init();
-        this.gameOver = false;
-        this.isThinking = false;
-        this.stopDotAnimation();
-        this.winRateLabel.innerText = "AI觉得自己有--%概率获胜";
-        this.winRateLabel.style.color = "#7f8c8d";
-        
-        const radios = document.getElementsByName('side');
-        for(let r of radios) if(r.checked) this.humanSide = parseInt(r.value);
-
-        this.draw();
-        if (this.humanSide === 2) this.triggerAiMove();
-        else this.updateStatus("请执黑落子");
-    }
-
-    draw() {
-        if (this.cellSize === 0) return;
-
-        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-        
-        const m = this.margin;
-        const cs = this.cellSize;
-
-        if (cs > 25) { 
-            this.ctx.fillStyle = "#5e4b35";
-            this.ctx.font = "bold 12px Arial";
-            this.ctx.textAlign = "center";
-            this.ctx.textBaseline = "middle";
-            
-            for (let i = 0; i < BOARD_SIZE; i++) {
-                const pos = m + i * cs;
-                this.ctx.fillText(String.fromCharCode(65 + i), pos, m - cs * 0.6);
-                this.ctx.fillText(i + 1, m - cs * 0.6, pos);
-            }
-        }
-
-        this.ctx.strokeStyle = "#5e4b35";
-        this.ctx.lineWidth = 1.2;
-        this.ctx.beginPath();
-        
-        for (let i = 0; i < BOARD_SIZE; i++) {
-            const y = m + i * cs;
-            this.ctx.moveTo(m, y);
-            this.ctx.lineTo(m + (BOARD_SIZE - 1) * cs, y);
-            
-            const x = m + i * cs;
-            this.ctx.moveTo(x, m);
-            this.ctx.lineTo(x, m + (BOARD_SIZE - 1) * cs);
-        }
-        this.ctx.stroke();
-        
-        this.ctx.fillStyle = "#5e4b35";
-        [3, 7, 11].forEach(r => {
-            [3, 7, 11].forEach(c => {
-                const x = m + c * cs;
-                const y = m + r * cs;
-                this.ctx.beginPath(); 
-                this.ctx.arc(x, y, cs * 0.12, 0, Math.PI*2); 
-                this.ctx.fill();
-            });
-        });
-
-        for (let i = 0; i < this.board.grid.length; i++) {
-            if (this.board.grid[i] !== 0) {
-                const r = Math.floor(i / BOARD_SIZE);
-                const c = i % BOARD_SIZE;
-                const x = m + c * cs;
-                const y = m + r * cs;
-                const radius = cs * 0.45;
-
-                this.ctx.beginPath();
-                this.ctx.arc(x, y, radius, 0, Math.PI*2);
-                
-                const grad = this.ctx.createRadialGradient(x - radius/3, y - radius/3, radius/5, x, y, radius * 1.3);
-                if (this.board.grid[i] === 1) { 
-                    grad.addColorStop(0, "#666"); grad.addColorStop(1, "#000");
-                } else { 
-                    grad.addColorStop(0, "#fff"); grad.addColorStop(1, "#dcdcdc");
-                }
-                this.ctx.fillStyle = grad;
-                this.ctx.fill();
-                
-                if (this.board.grid[i] === 2) {
-                    this.ctx.strokeStyle = "#bbb"; 
-                    this.ctx.lineWidth = 1; 
-                    this.ctx.stroke();
-                }
-            }
-        }
-        
-        if (this.board.lastMove !== -1) {
-            const r = Math.floor(this.board.lastMove / BOARD_SIZE);
-            const c = this.board.lastMove % BOARD_SIZE;
-            const x = m + c * cs;
-            const y = m + r * cs;
-            this.ctx.strokeStyle = "red";
-            this.ctx.lineWidth = 2;
-            this.ctx.beginPath();
-            
-            const markSize = cs * 0.15;
-            this.ctx.moveTo(x - markSize, y); this.ctx.lineTo(x + markSize, y);
-            this.ctx.moveTo(x, y - markSize); this.ctx.lineTo(x, y + markSize);
-            this.ctx.stroke();
-        }
-    }
-
-    async triggerAiMove() {
-        if (this.gameOver) return;
-        this.isThinking = true;
-        
-        this.startDotAnimation();
-        this.updateStatus("🤖 AI 正在思考...");
-        
-        setTimeout(async () => {
-            const res = await this.searcher.getMove(this.board);
-            
-            this.board.doMove(res.move);
-            this.finishMove();
-            this.isThinking = false;
-            
-            if (res.val !== undefined && res.val !== -Infinity) {
-                const clampedVal = Math.max(-1, Math.min(1, res.val));
-                const winRate = (clampedVal + 1) / 2 * 100;
-                this.winRateLabel.innerText = `AI觉得自己有${winRate.toFixed(1)}%概率获胜`;
-                
-                if (winRate >= 50) this.winRateLabel.style.color = "#27ae60"; 
-                else this.winRateLabel.style.color = "#c0392b"; 
-            }
-
-            this.stopDotAnimation();
-        }, 50);
-    }
-
-    onClick(e) {
-        if (this.isThinking || this.gameOver) return;
-        if (this.board.currentPlayer !== this.humanSide) return;
-
-        const rect = this.canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        
-        const c = Math.round((x - this.margin) / this.cellSize);
-        const r = Math.round((y - this.margin) / this.cellSize);
-        
-        if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE) return;
-        
-        const centerX = this.margin + c * this.cellSize;
-        const centerY = this.margin + r * this.cellSize;
-        const dist = Math.sqrt((x - centerX)**2 + (y - centerY)**2);
-        
-        if (dist > this.cellSize * 0.45) return; 
-
-        if (this.board.doMove(r * BOARD_SIZE + c)) {
-            this.finishMove();
-            if (!this.gameOver) this.triggerAiMove();
-        }
-    }
-
-    finishMove() {
-        this.draw();
-        const { end, winner } = this.board.hasWinner();
-        if (end) {
-            this.gameOver = true;
-            let msg = winner === this.humanSide ? "🎉 恭喜你赢了！" : (winner !== -1 ? "🤖 AI 赢了" : "🤝 平局");
-            this.updateStatus(msg);
-            setTimeout(() => alert(msg), 100);
-        } else {
-            const isMe = this.board.currentPlayer === this.humanSide;
-            this.updateStatus(isMe ? "👇 轮到你了" : "⏳ 等待 AI...");
-        }
-    }
-
-    undoMove() {
-        if (this.isThinking || this.gameOver) return;
-        if (this.board.moveCount >= 2) {
-            this.board.undoMove(); this.board.undoMove();
-            this.draw();
-            this.updateStatus("↩️ 已悔棋");
-        } else if (this.humanSide === 2 && this.board.moveCount === 1) {
-            this.board.undoMove();
-            this.triggerAiMove();
-        }
-    }
-
-    updateStatus(text) { this.statusLabel.innerText = text; }
-}
-
-const game = new GameController();
-</script>
-</body>
-</html>
+                bestMove = cand
