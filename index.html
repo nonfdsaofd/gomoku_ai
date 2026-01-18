@@ -575,16 +575,8 @@ class GameController {
         for(let r of radios) if(r.checked) this.humanSide = parseInt(r.value);
 
         this.draw();
-        
-        // 如果AI执黑，AI先落第一子（天元）
-        if (this.humanSide === 2) {
-            const center = Math.floor((BOARD_SIZE * BOARD_SIZE) / 2);
-            this.board.doMove(center);
-            this.finishMove();
-            // 第一手不需要triggerAiMove，直接下完等待玩家白棋
-        } else {
-            this.updateStatus("请执黑落子");
-        }
+        if (this.humanSide === 2) this.triggerAiMove();
+        else this.updateStatus("请执黑落子");
     }
 
     draw() {
